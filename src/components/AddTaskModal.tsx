@@ -2,14 +2,14 @@
 
 import React, { useState } from 'react';
 import { Lang, t } from '@/lib/i18n';
-import { CreateTaskInput } from '@/lib/db';
+import { Task } from '@/lib/storage';
 import Tooltip from '@/components/Tooltip';
 
 interface AddTaskModalProps {
   lang: Lang;
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (task: CreateTaskInput) => void;
+  onAdd: (task: Omit<Task, 'id' | 'createdAt' | 'status'>) => void;
 }
 
 export default function AddTaskModal({ lang, isOpen, onClose, onAdd }: AddTaskModalProps) {
@@ -68,25 +68,25 @@ export default function AddTaskModal({ lang, isOpen, onClose, onAdd }: AddTaskMo
 
   const handleSubmit = () => {
     if (!text.trim()) return;
-    let due_at: string;
+    let dueAt: string;
     if (dueDate && dueTime) {
-      due_at = new Date(`${dueDate}T${dueTime}`).toISOString();
+      dueAt = new Date(`${dueDate}T${dueTime}`).toISOString();
     } else {
-      due_at = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      dueAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     }
     onAdd({
       text: text.trim(),
-      due_at,
+      dueAt,
       priority,
-      is_frog: isFrog,
-      is_recurring: recurrence !== 'none',
-      recurrence_rule: recurrence,
+      isFrog,
+      isRecurring: recurrence !== 'none',
+      recurrenceRule: recurrence,
       lang,
       ...(locationLat && locationLng ? {
-        location_name: locationName || undefined,
-        location_lat: locationLat,
-        location_lng: locationLng,
-        location_radius: locationRadius,
+        locationName: locationName || undefined,
+        locationLat,
+        locationLng,
+        locationRadius,
       } : {}),
     });
     setText('');

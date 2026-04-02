@@ -2,103 +2,64 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import {
-  DbTask,
-  CreateTaskInput,
-  fetchTodayTasks,
-  fetchOverdueTasks,
-  fetchUpcomingTasks,
-  fetchTasks,
-  createTask,
-  updateTaskDb,
-  deleteTaskDb,
-  ensureAuth,
-  migrateFromLocalStorage,
-} from '@/lib/db';
+  Task,
+  getTasks,
+  addTask as storageAddTask,
+  updateTask,
+  deleteTask as storageDeleteTask,
+  getTodayTasks,
+  getOverdueTasks,
+  getUpcomingTasks,
+} from '@/lib/storage';
 
 export function useTasks() {
-  const [tasks, setTasks] = useState<DbTask[]>([]);
-  const [todayTasks, setTodayTasks] = useState<DbTask[]>([]);
-  const [overdueTasks, setOverdueTasks] = useState<DbTask[]>([]);
-  const [upcomingTasks, setUpcomingTasks] = useState<DbTask[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [authReady, setAuthReady] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [todayTasks, setTodayTasks] = useState<Task[]>([]);
+  const [overdueTasks, setOverdueTasks] = useState<Task[]>([]);
+  const [upcomingTasks, setUpcomingTasks] = useState<Task[]>([]);
 
-  // Initialize auth + migrate local data on first load
-  useEffect(() => {
-    const init = async () => {
-      try {
-        await ensureAuth();
-        setAuthReady(true);
-        // Migrate existing localStorage tasks to Supabase
-        const migrated = await migrateFromLocalStorage();
-        if (migrated > 0) {
-          console.log(`🔮 Migrated ${migrated} tasks from localStorage to cloud`);
-        }
-      } catch (err) {
-        console.error('Auth init failed:', err);
-        setAuthReady(true); // Still mark as ready to avoid blocking
-      }
-    };
-    init();
+  const refresh = useCallback(() => {
+    setTasks(getTasks());
+    setTodayTasks(getTodayTasks());
+    setOverdueTasks(getOverdueTasks());
+    setUpcomingTasks(getUpcomingTasks());
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!authReady) return;
-    setLoading(true);
-    try {
-      const [all, today, overdue, upcoming] = await Promise.all([
-        fetchTasks(),
-        fetchTodayTasks(),
-        fetchOverdueTasks(),
-        fetchUpcomingTasks(),
-      ]);
-      setTasks(all);
-      setTodayTasks(today);
-      setOverdueTasks(overdue);
-      setUpcomingTasks(upcoming);
-    } catch (err) {
-      console.error('Refresh error:', err);
-    }
-    setLoading(false);
-  }, [authReady]);
-
-  // Auto-refresh when auth is ready and every 30 seconds
   useEffect(() => {
-    if (!authReady) return;
     refresh();
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(refresh, 30000); // refresh every 30s
     return () => clearInterval(interval);
-  }, [authReady, refresh]);
+  }, [refresh]);
 
   const addTask = useCallback(
-    async (input: CreateTaskInput) => {
-      await createTask(input);
-      await refresh();
+    (task: Omit<Task, 'id' | 'createdAt' | 'status'>) => {
+      storageAddTask(task);
+      refresh();
     },
     [refresh]
   );
 
   const completeTask = useCallback(
-    async (id: string) => {
-      await updateTaskDb(id, { status: 'done' });
-      await refresh();
+    (id: string) => {
+      updateTask(id, { status: 'done' });
+      refresh();
     },
     [refresh]
   );
 
   const removeTask = useCallback(
-    async (id: string) => {
-      await deleteTaskDb(id);
-      await refresh();
+    (id: string) => {
+      storageDeleteTask(id);
+      refresh();
     },
     [refresh]
   );
 
   const snoozeTask = useCallback(
-    async (id: string, minutes: number) => {
+    (id: string, minutes: number) => {
       const newDue = new Date(Date.now() + minutes * 60 * 1000).toISOString();
-      await updateTaskDb(id, { due_at: newDue, status: 'pending' });
-      await refresh();
+      updateTask(id, { dueAt: newDue, status: 'pending' });
+      refresh();
     },
     [refresh]
   );
@@ -108,8 +69,6 @@ export function useTasks() {
     todayTasks,
     overdueTasks,
     upcomingTasks,
-    loading,
-    authReady,
     addTask,
     completeTask,
     removeTask,

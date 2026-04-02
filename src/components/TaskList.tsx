@@ -1,12 +1,12 @@
 'use client';
 
 import React from 'react';
-import { DbTask, updateTaskDb } from '@/lib/db';
+import { Task, updateTask } from '@/lib/storage';
 import { Lang, t } from '@/lib/i18n';
 
 interface TaskListProps {
-  tasks: DbTask[];
-  overdueTasks: DbTask[];
+  tasks: Task[];
+  overdueTasks: Task[];
   lang: Lang;
   onComplete: (id: string) => void;
   onDelete: (id: string) => void;
@@ -39,7 +39,7 @@ function TaskItem({
   onSnooze,
   onRefresh,
 }: {
-  task: DbTask;
+  task: Task;
   isOverdue: boolean;
   lang: Lang;
   onComplete: (id: string) => void;
@@ -59,30 +59,30 @@ function TaskItem({
   }, []);
 
   const priorityIcon = task.priority === 'critical' ? '🔴' : task.priority === 'important' ? '🟡' : '🟢';
-  const status = getStatusDot(task.due_at);
+  const status = getStatusDot(task.dueAt);
 
-  const handleSaveText = async () => {
+  const handleSaveText = () => {
     if (editText.trim() && editText !== task.text) {
-      await updateTaskDb(task.id, { text: editText.trim() });
+      updateTask(task.id, { text: editText.trim() });
       if (onRefresh) onRefresh();
     }
     setEditing(false);
   };
 
-  const handleSetRemindBefore = async (minutes: number) => {
-    // remind_before is stored in DB but for simplicity we update via API
-    // For now, just close actions (remind_before not in updateTaskDb partial)
+  const handleSetRemindBefore = (minutes: number) => {
+    updateTask(task.id, { remindBefore: minutes });
+    if (onRefresh) onRefresh();
     setShowActions(false);
   };
 
-  const remindLabel = task.remind_before
+  const remindLabel = task.remindBefore
     ? (lang === 'ru'
-        ? `🔔 за ${task.remind_before} мин`
-        : `🔔 ${task.remind_before}m before`)
+        ? `🔔 за ${task.remindBefore} мин`
+        : `🔔 ${task.remindBefore}m before`)
     : '';
 
   return (
-    <div className={`task-item ${isOverdue ? 'task-overdue' : ''} ${task.is_frog ? 'task-frog' : ''} priority-${task.priority}`}>
+    <div className={`task-item ${isOverdue ? 'task-overdue' : ''} ${task.isFrog ? 'task-frog' : ''} priority-${task.priority}`}>
       <div className="task-main" onClick={() => !editing && setShowActions(!showActions)}>
         <div className="task-left">
           <button
@@ -113,21 +113,21 @@ function TaskItem({
               />
             ) : (
               <span className="task-text">
-                {task.is_frog && '🐸 '}
+                {task.isFrog && '🐸 '}
                 {task.text}
               </span>
             )}
             <span className="task-time-abs">
-              {formatTime(task.due_at)}
+              {formatTime(task.dueAt)}
               {remindLabel && <span className="remind-badge">{remindLabel}</span>}
-              {task.location_name && <span className="remind-badge geo-badge">📍 {task.location_name}</span>}
+              {task.locationName && <span className="remind-badge geo-badge">📍 {task.locationName}</span>}
             </span>
           </div>
         </div>
         <div className="task-right">
           <span className="task-priority">{priorityIcon}</span>
           <span className={`task-time-display ${status.className}`}>
-            {status.dot} {formatTime(task.due_at)}
+            {status.dot} {formatTime(task.dueAt)}
           </span>
         </div>
       </div>
@@ -136,19 +136,19 @@ function TaskItem({
           <div className="actions-row">
             <span className="actions-label">{lang === 'ru' ? '🔔 Напомнить за:' : '🔔 Remind:'}</span>
             <button
-              className={`action-btn remind-btn ${task.remind_before === 5 ? 'active' : ''}`}
+              className={`action-btn remind-btn ${task.remindBefore === 5 ? 'active' : ''}`}
               onClick={() => handleSetRemindBefore(5)}
             >
               5 {lang === 'ru' ? 'мин' : 'min'}
             </button>
             <button
-              className={`action-btn remind-btn ${task.remind_before === 15 ? 'active' : ''}`}
+              className={`action-btn remind-btn ${task.remindBefore === 15 ? 'active' : ''}`}
               onClick={() => handleSetRemindBefore(15)}
             >
               15 {lang === 'ru' ? 'мин' : 'min'}
             </button>
             <button
-              className={`action-btn remind-btn ${task.remind_before === 30 ? 'active' : ''}`}
+              className={`action-btn remind-btn ${task.remindBefore === 30 ? 'active' : ''}`}
               onClick={() => handleSetRemindBefore(30)}
             >
               30 {lang === 'ru' ? 'мин' : 'min'}
