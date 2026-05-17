@@ -1,4 +1,4 @@
-export type SoundType = 'magic' | 'bell' | 'gong' | 'piano' | 'harp';
+export type SoundType = 'magic' | 'bell' | 'gong' | 'piano' | 'harp' | 'frog';
 
 export async function requestNotificationPermission(): Promise<boolean> {
   if (typeof window === 'undefined' || !('Notification' in window)) return false;
@@ -116,6 +116,62 @@ function playHarp(ctx: AudioContext): void {
   });
 }
 
+// ============================================
+// FROG CROAK SOUND 🐸
+// ============================================
+
+function playFrogCroak(ctx: AudioContext): void {
+  // Croak 1
+  const osc1 = ctx.createOscillator();
+  const gain1 = ctx.createGain();
+  osc1.type = 'sawtooth';
+  osc1.frequency.setValueAtTime(120, ctx.currentTime);
+  osc1.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.15);
+  osc1.frequency.exponentialRampToValueAtTime(150, ctx.currentTime + 0.2);
+  osc1.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.35);
+  gain1.gain.setValueAtTime(0.3, ctx.currentTime);
+  gain1.gain.setValueAtTime(0.4, ctx.currentTime + 0.1);
+  gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+  osc1.connect(gain1);
+  gain1.connect(ctx.destination);
+  osc1.start(ctx.currentTime);
+  osc1.stop(ctx.currentTime + 0.4);
+
+  // Croak 2 (slightly delayed)
+  const osc2 = ctx.createOscillator();
+  const gain2 = ctx.createGain();
+  osc2.type = 'sawtooth';
+  osc2.frequency.setValueAtTime(130, ctx.currentTime + 0.5);
+  osc2.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + 0.65);
+  osc2.frequency.exponentialRampToValueAtTime(160, ctx.currentTime + 0.7);
+  osc2.frequency.exponentialRampToValueAtTime(65, ctx.currentTime + 0.9);
+  gain2.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain2.gain.setValueAtTime(0.35, ctx.currentTime + 0.5);
+  gain2.gain.setValueAtTime(0.45, ctx.currentTime + 0.6);
+  gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.95);
+  osc2.connect(gain2);
+  gain2.connect(ctx.destination);
+  osc2.start(ctx.currentTime + 0.5);
+  osc2.stop(ctx.currentTime + 0.95);
+
+  // Croak 3 (final, louder)
+  const osc3 = ctx.createOscillator();
+  const gain3 = ctx.createGain();
+  osc3.type = 'sawtooth';
+  osc3.frequency.setValueAtTime(140, ctx.currentTime + 1.1);
+  osc3.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 1.25);
+  osc3.frequency.exponentialRampToValueAtTime(180, ctx.currentTime + 1.3);
+  osc3.frequency.exponentialRampToValueAtTime(70, ctx.currentTime + 1.5);
+  gain3.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain3.gain.setValueAtTime(0.4, ctx.currentTime + 1.1);
+  gain3.gain.setValueAtTime(0.5, ctx.currentTime + 1.2);
+  gain3.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.55);
+  osc3.connect(gain3);
+  gain3.connect(ctx.destination);
+  osc3.start(ctx.currentTime + 1.1);
+  osc3.stop(ctx.currentTime + 1.55);
+}
+
 export function playSound(type: SoundType = 'magic'): void {
   if (typeof window === 'undefined') return;
   try {
@@ -125,6 +181,7 @@ export function playSound(type: SoundType = 'magic'): void {
       case 'gong': playGong(ctx); break;
       case 'piano': playPiano(ctx); break;
       case 'harp': playHarp(ctx); break;
+      case 'frog': playFrogCroak(ctx); break;
       case 'magic':
       default: playMagicChime(ctx); break;
     }
@@ -155,6 +212,91 @@ export function speak(text: string, lang: 'ru' | 'en', voiceName?: string): void
 
   window.speechSynthesis.speak(utterance);
 }
+
+// ============================================
+// NEURAL TTS (Edge TTS via API)
+// ============================================
+
+let currentAudio: HTMLAudioElement | null = null;
+
+export async function speakNeural(
+  text: string,
+  lang: 'ru' | 'en',
+  neuralVoice?: string
+): Promise<void> {
+  if (typeof window === 'undefined') return;
+
+  // Stop any currently playing audio
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
+  // Choose voice based on language if not specified
+  const voice = neuralVoice || (lang === 'ru' ? 'ru-svetlana' : 'en-jenny');
+
+  try {
+    const response = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`TTS API error: ${response.status}`);
+    }
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    
+    const audio = new Audio(audioUrl);
+    currentAudio = audio;
+    
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+      currentAudio = null;
+    };
+    
+    audio.onerror = () => {
+      URL.revokeObjectURL(audioUrl);
+      currentAudio = null;
+      // Fallback to browser TTS
+      speak(text, lang);
+    };
+
+    await audio.play();
+  } catch (error) {
+    console.warn('Neural TTS failed, falling back to browser TTS:', error);
+    // Fallback to browser SpeechSynthesis
+    speak(text, lang);
+  }
+}
+
+export function stopNeuralSpeech(): void {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+// Neural voice options
+export interface NeuralVoiceOption {
+  id: string;
+  label: { ru: string; en: string };
+  lang: 'ru' | 'en';
+}
+
+export const neuralVoices: NeuralVoiceOption[] = [
+  { id: 'ru-svetlana', label: { ru: '🇷🇺 Светлана (жен.)', en: '🇷🇺 Svetlana (F)' }, lang: 'ru' },
+  { id: 'ru-dmitry', label: { ru: '🇷🇺 Дмитрий (муж.)', en: '🇷🇺 Dmitry (M)' }, lang: 'ru' },
+  { id: 'en-jenny', label: { ru: '🇺🇸 Дженни (жен.)', en: '🇺🇸 Jenny (F)' }, lang: 'en' },
+  { id: 'en-guy', label: { ru: '🇺🇸 Гай (муж.)', en: '🇺🇸 Guy (M)' }, lang: 'en' },
+  { id: 'en-aria', label: { ru: '🇺🇸 Ария (жен.)', en: '🇺🇸 Aria (F)' }, lang: 'en' },
+  { id: 'en-sara', label: { ru: '🇬🇧 Соня (жен.)', en: '🇬🇧 Sonia (F)' }, lang: 'en' },
+];
 
 export function getAvailableVoices(lang: 'ru' | 'en'): SpeechSynthesisVoice[] {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
@@ -231,4 +373,5 @@ export const soundLabels: Record<SoundType, { ru: string; en: string }> = {
   gong: { ru: '🎵 Гонг', en: '🎵 Gong' },
   piano: { ru: '🎹 Пиано', en: '🎹 Piano' },
   harp: { ru: '🎻 Арфа', en: '🎻 Harp' },
+  frog: { ru: '🐸 Кваканье', en: '🐸 Frog croak' },
 };

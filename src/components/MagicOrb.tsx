@@ -19,10 +19,6 @@ export default function MagicOrb({ hasOverdue, hasUpcoming, pomodoroPhase, onCli
 
   return (
     <button className="orb-container" onClick={onClick} aria-label="Add reminder">
-      <div className="orb-hands">
-        <div className="orb-hand orb-hand-left" />
-        <div className="orb-hand orb-hand-right" />
-      </div>
       <div className={`orb ${smokeClass}`}>
         <div className="orb-glass" />
         <div className="orb-smoke smoke-layer-1" />

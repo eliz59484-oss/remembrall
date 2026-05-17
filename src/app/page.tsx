@@ -13,23 +13,41 @@ import { usePomodoro } from '@/hooks/usePomodoro';
 import { useTasks } from '@/hooks/useTasks';
 import { useLanguage } from '@/hooks/useLanguage';
 import { useGeoReminder } from '@/hooks/useGeoReminder';
+import { useServiceWorker } from '@/hooks/useServiceWorker';
 import { t } from '@/lib/i18n';
-import { Task } from '@/lib/storage';
+import { Task, initStorage } from '@/lib/storage';
 import {
   requestNotificationPermission,
   sendNotification,
   playSound,
   vibrate,
   speak,
+  speakNeural,
   getRandomQuote,
 } from '@/lib/notifications';
 import { getSettings } from '@/lib/storage';
+
+// Track which tasks have already been notified this session (persisted in sessionStorage)
+const NOTIFIED_KEY = 'remembrall_notified';
+function getNotifiedTasks(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const saved = sessionStorage.getItem(NOTIFIED_KEY);
+    return saved ? new Set(JSON.parse(saved)) : new Set();
+  } catch { return new Set(); }
+}
+function markNotified(key: string) {
+  const set = getNotifiedTasks();
+  set.add(key);
+  try { sessionStorage.setItem(NOTIFIED_KEY, JSON.stringify([...set])); } catch {}
+}
 
 export default function Home() {
   const { lang, toggle } = useLanguage();
   const { todayTasks, overdueTasks, upcomingTasks, addTask, completeTask, removeTask, snoozeTask, refresh } = useTasks();
   const pomodoro = usePomodoro();
   useGeoReminder();
+  useServiceWorker();
   const [modalOpen, setModalOpen] = useState(false);
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -39,34 +57,93 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     requestNotificationPermission();
+    // Apply saved theme + accessibility settings
+    const savedSettings = getSettings();
+    document.documentElement.setAttribute('data-theme', savedSettings.theme || 'dark');
+    document.documentElement.setAttribute('data-size', savedSettings.largeUi ? 'large' : 'normal');
+    document.documentElement.setAttribute('data-orb', savedSettings.orbMode || 'vibrant');
+    // Initialize Supabase in background (never blocks UI)
+    initStorage()
+      .then(() => refresh())
+      .catch(() => {}); // silently handle — app works offline
   }, []);
 
-  // Check for due notifications every 30 seconds
+  // Check for due notifications every 10 seconds
   useEffect(() => {
     if (!mounted) return;
 
     const checkNotifications = () => {
       const settings = getSettings();
       const now = new Date();
-      const overdueList = overdueTasks;
+      const allPending = [...overdueTasks, ...todayTasks, ...upcomingTasks];
 
-      overdueList.forEach((task) => {
-        const dueTime = new Date(task.dueAt);
-        const diffMs = now.getTime() - dueTime.getTime();
-        // Notify if overdue by less than 60 seconds (just became overdue)
-        if (diffMs > 0 && diffMs < 60000) {
-          const title = lang === 'ru' ? '🔮 Напоминание!' : '🔮 Reminder!';
-          sendNotification(title, task.text);
+      allPending.forEach((task) => {
+        if (task.status !== 'pending') return;
+
+        const dueTime = new Date(task.dueAt).getTime();
+        const remindMs = (task.remindBefore || 5) * 60 * 1000;
+        const remindAt = dueTime - remindMs;
+        const nowMs = now.getTime();
+
+        // Notify if: task is overdue OR we're within the remindBefore window
+        const isOverdue = nowMs >= dueTime;
+        const isRemindTime = nowMs >= remindAt && nowMs < dueTime;
+
+        if (!isOverdue && !isRemindTime) return;
+
+        // Build unique key: per-task + per-phase (remind vs overdue)
+        const notifKey = isOverdue ? `overdue:${task.id}` : `remind:${task.id}`;
+        if (getNotifiedTasks().has(notifKey)) return;
+        markNotified(notifKey);
+
+        // Frog tasks get special treatment 🐸
+        if (task.isFrog) {
+          const frogTitle = lang === 'ru' ? '🐸 Ква-ква! Съешь лягушку!' : '🐸 Ribbit! Eat the frog!';
+          const frogBody = isOverdue
+            ? (lang === 'ru' ? `⚠️ Просрочено: ${task.text}` : `⚠️ Overdue: ${task.text}`)
+            : (lang === 'ru' ? `⏰ Через ${task.remindBefore || 5} мин: ${task.text}` : `⏰ In ${task.remindBefore || 5} min: ${task.text}`);
+          
+          sendNotification(frogTitle, frogBody);
+          if (settings.soundEnabled) playSound('frog'); // Always croak for frogs!
+          if (settings.vibrationEnabled) vibrate([300, 150, 300, 150, 500]); // Special pattern
+          if (settings.ttsEnabled) {
+            const ttsMsg = lang === 'ru' 
+              ? `Ква-ква! Пора съесть лягушку: ${task.text}` 
+              : `Ribbit! Time to eat the frog: ${task.text}`;
+            if (settings.useNeuralTts) {
+              speakNeural(ttsMsg, task.lang, settings.neuralVoice);
+            } else {
+              speak(ttsMsg, task.lang, settings.voiceName || undefined);
+            }
+          }
+        } else {
+          // Regular task notification
+          const title = isOverdue
+            ? (lang === 'ru' ? '🔮 Просрочено!' : '🔮 Overdue!')
+            : (lang === 'ru' ? '🔮 Скоро!' : '🔮 Coming up!');
+          const body = isOverdue
+            ? task.text
+            : (lang === 'ru' ? `Через ${task.remindBefore || 5} мин: ${task.text}` : `In ${task.remindBefore || 5} min: ${task.text}`);
+          
+          sendNotification(title, body);
           if (settings.soundEnabled) playSound(settings.soundType);
           if (settings.vibrationEnabled) vibrate();
-          if (settings.ttsEnabled) speak(task.text, task.lang, settings.voiceName || undefined);
+          if (settings.ttsEnabled) {
+            if (settings.useNeuralTts) {
+              speakNeural(task.text, task.lang, settings.neuralVoice);
+            } else {
+              speak(task.text, task.lang, settings.voiceName || undefined);
+            }
+          }
         }
       });
     };
 
-    const interval = setInterval(checkNotifications, 30000);
+    // Check immediately + every 10 seconds
+    checkNotifications();
+    const interval = setInterval(checkNotifications, 10000);
     return () => clearInterval(interval);
-  }, [mounted, overdueTasks, lang]);
+  }, [mounted, overdueTasks, todayTasks, upcomingTasks, lang]);
 
   // Pomodoro phase change notifications
   useEffect(() => {
@@ -77,84 +154,103 @@ export default function Home() {
       if (settings.vibrationEnabled) vibrate();
       const msg = getRandomQuote(lang, 'pomodoroBreak');
       sendNotification('🍅 Remembrall', msg);
-      if (settings.ttsEnabled) speak(msg, lang, settings.voiceName || undefined);
+      if (settings.ttsEnabled) {
+        if (settings.useNeuralTts) {
+          speakNeural(msg, lang, settings.neuralVoice);
+        } else {
+          speak(msg, lang, settings.voiceName || undefined);
+        }
+      }
     } else if (pomodoro.phase === 'work' && pomodoro.completedToday > 0) {
       if (settings.soundEnabled) playSound(settings.soundType);
       const msg = t(lang, 'pomodoroActive');
       sendNotification('🍅 Remembrall', msg);
-      if (settings.ttsEnabled) speak(msg, lang, settings.voiceName || undefined);
+      if (settings.ttsEnabled) {
+        if (settings.useNeuralTts) {
+          speakNeural(msg, lang, settings.neuralVoice);
+        } else {
+          speak(msg, lang, settings.voiceName || undefined);
+        }
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pomodoro.phase]);
 
   const handleVoiceResult = useCallback((text: string) => {
-    // Try to parse time from voice input
     let dueAt: string;
+    let priority: 'critical' | 'important' | 'normal' = 'normal';
     const now = new Date();
+    const lower = text.toLowerCase();
 
-    // Match "в HH:MM" or "в H:MM"
-    const absoluteMatch = text.match(/в\s*(\d{1,2})[:.]?(\d{2})/i);
-    // Match "через X минут/мин/часов/час"
-    const relativeMatch = text.match(/через\s*(\d+)\s*(мин|час|hour|min)/i);
-    // Match "at HH:MM"
-    const atMatch = text.match(/at\s*(\d{1,2})[:.]?(\d{2})/i);
-    // Match "in X min/hour"
+    // Priority from voice
+    if (/\u043a\u0440\u0438\u0442\u0438\u0447|\u0441\u0440\u043e\u0447\u043d\u043e|urgent|critical/.test(lower)) priority = 'critical';
+    else if (/\u0432\u0430\u0436\u043d\u043e|important/.test(lower)) priority = 'important';
+
+    // Time regex patterns
+    const absoluteMatch = text.match(/\u0432\s*(\d{1,2})[:.h]?(\d{2})/i);
+    const relativeMatch = text.match(/\u0447\u0435\u0440\u0435\u0437\s*(\d+)\s*(\u043c\u0438\u043d|\u0447\u0430\u0441|hour|min)/i);
+    const atMatch = text.match(/at\s*(\d{1,2})[:.h]?(\d{2})/i);
     const inMatch = text.match(/in\s*(\d+)\s*(min|hour)/i);
-    // Match standalone time at start: "20:45 встреча" or "9:30 call"
-    const standaloneMatch = text.match(/^(\d{1,2})[:.]?(\d{2})\s/);
+    const standaloneMatch = text.match(/^(\d{1,2})[:.h]?(\d{2})\s/);
 
-    if (absoluteMatch) {
-      const h = parseInt(absoluteMatch[1]);
-      const m = parseInt(absoluteMatch[2]);
-      const d = new Date(now);
-      d.setHours(h, m, 0, 0);
-      if (d < now) d.setDate(d.getDate() + 1); // if time passed, set tomorrow
+    if (/\u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043e|\u043f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u0430|overdue|\u0443\u0436\u0435\s*\u043f\u0440\u043e\u0448\u043b\u043e/.test(lower)) {
+      dueAt = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+      if (priority === 'normal') priority = 'critical';
+    } else if (/\u0441\u0435\u0439\u0447\u0430\u0441|\u043d\u0435\u043c\u0435\u0434\u043b\u0435\u043d\u043d\u043e|\u043f\u0440\u044f\u043c\u043e\s*\u0441\u0435\u0439\u0447\u0430\u0441|now|immediately/.test(lower)) {
+      dueAt = new Date(now.getTime() + 2 * 60 * 1000).toISOString();
+    } else if (/\u0437\u0430\u0432\u0442\u0440\u0430 \u0443\u0442\u0440\u043e\u043c|tomorrow morning/.test(lower)) {
+      const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0);
+      dueAt = d.toISOString();
+    } else if (/\u0437\u0430\u0432\u0442\u0440\u0430 \u0432\u0435\u0447\u0435\u0440\u043e\u043c|tomorrow evening/.test(lower)) {
+      const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(19, 0, 0, 0);
+      dueAt = d.toISOString();
+    } else if (/\u0437\u0430\u0432\u0442\u0440\u0430|tomorrow/.test(lower)) {
+      const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
+      dueAt = d.toISOString();
+    } else if (/\u0441\u0435\u0433\u043e\u0434\u043d\u044f \u0432\u0435\u0447\u0435\u0440\u043e\u043c|tonight/.test(lower)) {
+      const d = new Date(now); d.setHours(19, 0, 0, 0); dueAt = d.toISOString();
+    } else if (/\u0441\u0435\u0433\u043e\u0434\u043d\u044f|today/.test(lower)) {
+      const d = new Date(now); d.setHours(23, 59, 0, 0); dueAt = d.toISOString();
+    } else if (/\u0432\u0435\u0447\u0435\u0440\u043e\u043c|\u0432\u0435\u0447\u0435\u0440/.test(lower)) {
+      const d = new Date(now); d.setHours(19, 0, 0, 0);
+      if (d < now) d.setDate(d.getDate() + 1);
+      dueAt = d.toISOString();
+    } else if (/\u0443\u0442\u0440\u043e\u043c|\u0443\u0442\u0440\u043e|morning/.test(lower)) {
+      const d = new Date(now); d.setHours(8, 0, 0, 0);
+      if (d < now) d.setDate(d.getDate() + 1);
+      dueAt = d.toISOString();
+    } else if (absoluteMatch) {
+      const h = parseInt(absoluteMatch[1]), m = parseInt(absoluteMatch[2]);
+      const d = new Date(now); d.setHours(h, m, 0, 0);
+      if (d < now) d.setDate(d.getDate() + 1);
       dueAt = d.toISOString();
     } else if (atMatch) {
-      const h = parseInt(atMatch[1]);
-      const m = parseInt(atMatch[2]);
-      const d = new Date(now);
-      d.setHours(h, m, 0, 0);
+      const h = parseInt(atMatch[1]), m = parseInt(atMatch[2]);
+      const d = new Date(now); d.setHours(h, m, 0, 0);
       if (d < now) d.setDate(d.getDate() + 1);
       dueAt = d.toISOString();
     } else if (relativeMatch) {
-      const amount = parseInt(relativeMatch[1]);
-      const unit = relativeMatch[2].toLowerCase();
-      const ms = unit.startsWith('час') || unit.startsWith('hour')
-        ? amount * 60 * 60 * 1000
-        : amount * 60 * 1000;
+      const ms = relativeMatch[2].startsWith('\u0447\u0430\u0441') || relativeMatch[2].startsWith('hour')
+        ? parseInt(relativeMatch[1]) * 3600000 : parseInt(relativeMatch[1]) * 60000;
       dueAt = new Date(now.getTime() + ms).toISOString();
     } else if (inMatch) {
-      const amount = parseInt(inMatch[1]);
-      const unit = inMatch[2].toLowerCase();
-      const ms = unit.startsWith('hour') ? amount * 60 * 60 * 1000 : amount * 60 * 1000;
+      const ms = inMatch[2].startsWith('hour') ? parseInt(inMatch[1]) * 3600000 : parseInt(inMatch[1]) * 60000;
       dueAt = new Date(now.getTime() + ms).toISOString();
     } else if (standaloneMatch) {
-      const h = parseInt(standaloneMatch[1]);
-      const m = parseInt(standaloneMatch[2]);
-      const d = new Date(now);
-      d.setHours(h, m, 0, 0);
+      const h = parseInt(standaloneMatch[1]), m = parseInt(standaloneMatch[2]);
+      const d = new Date(now); d.setHours(h, m, 0, 0);
       if (d < now) d.setDate(d.getDate() + 1);
       dueAt = d.toISOString();
     } else {
-      // Default: 1 hour from now
-      dueAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+      dueAt = new Date(now.getTime() + 3600000).toISOString();
     }
 
-    addTask({
-      text,
-      dueAt,
-      priority: 'normal',
-      isFrog: false,
-      isRecurring: false,
-      lang,
-    });
+    addTask({ text, dueAt, priority, isFrog: false, isRecurring: false, lang });
   }, [addTask, lang]);
 
   const handleAddTask = useCallback((task: Omit<Task, 'id' | 'createdAt' | 'status'>) => {
     addTask(task);
-    refresh();
-  }, [addTask, refresh]);
+  }, [addTask]);
 
   const handleOrbClick = () => {
     setModalOpen(true);
@@ -167,7 +263,13 @@ export default function Home() {
       const msg = getRandomQuote(lang, 'frogDone');
       const settings = getSettings();
       sendNotification('🐸 Remembrall', msg);
-      if (settings.ttsEnabled) speak(msg, lang, settings.voiceName || undefined);
+      if (settings.ttsEnabled) {
+        if (settings.useNeuralTts) {
+          speakNeural(msg, lang, settings.neuralVoice);
+        } else {
+          speak(msg, lang, settings.voiceName || undefined);
+        }
+      }
     }
   }, [todayTasks, overdueTasks, completeTask, lang]);
 
@@ -311,15 +413,16 @@ export default function Home() {
               const [h, m] = pt.timeHint.split(':').map(Number);
               const d = new Date(now);
               d.setHours(h, m, 0, 0);
-              if (d < now) d.setDate(d.getDate() + 1);
+              // If time already passed today, keep it as-is (will show as overdue)
               dueAt = d.toISOString();
             } else {
               dueAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
             }
+            const safePriority = ['critical', 'important', 'normal'].includes(pt.priority) ? pt.priority : 'normal';
             addTask({
               text: pt.text,
               dueAt,
-              priority: pt.priority,
+              priority: safePriority as 'critical' | 'important' | 'normal',
               isFrog: false,
               isRecurring: false,
               lang,

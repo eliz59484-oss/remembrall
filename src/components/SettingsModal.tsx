@@ -3,7 +3,16 @@
 import React, { useState, useEffect } from 'react';
 import { Lang, t } from '@/lib/i18n';
 import { AppSettings, getSettings, saveSettings } from '@/lib/storage';
-import { playSound, vibrate, speak, getAvailableVoices, soundLabels, SoundType } from '@/lib/notifications';
+import {
+  playSound,
+  vibrate,
+  speak,
+  speakNeural,
+  getAvailableVoices,
+  soundLabels,
+  SoundType,
+  neuralVoices,
+} from '@/lib/notifications';
 
 interface SettingsModalProps {
   lang: Lang;
@@ -15,11 +24,11 @@ interface SettingsModalProps {
 export default function SettingsModal({ lang, isOpen, onClose, onLangChange }: SettingsModalProps) {
   const [settings, setSettings] = useState<AppSettings>(getSettings());
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [neuralTestLoading, setNeuralTestLoading] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       setSettings(getSettings());
-      // Load voices (may load async)
       const loadVoices = () => {
         setVoices(getAvailableVoices(settings.lang));
       };
@@ -41,13 +50,31 @@ export default function SettingsModal({ lang, isOpen, onClose, onLangChange }: S
 
   const testSound = (type: SoundType) => playSound(type);
   const testVibration = () => vibrate();
-  const testVoice = () => speak(
+  const testBrowserVoice = () => speak(
     lang === 'ru' ? 'Тест голосового уведомления' : 'Voice notification test',
     lang,
     settings.voiceName || undefined
   );
 
+  const testNeuralVoice = async (voiceId?: string) => {
+    setNeuralTestLoading(true);
+    try {
+      await speakNeural(
+        lang === 'ru'
+          ? 'Привет! Я твой магический помощник Remembrall'
+          : 'Hello! I am your magical assistant Remembrall',
+        lang,
+        voiceId || settings.neuralVoice
+      );
+    } finally {
+      setNeuralTestLoading(false);
+    }
+  };
+
   const soundTypes: SoundType[] = ['magic', 'bell', 'gong', 'piano', 'harp'];
+
+  // Filter neural voices by current language
+  const filteredNeuralVoices = neuralVoices.filter((v) => v.lang === lang);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -69,6 +96,33 @@ export default function SettingsModal({ lang, isOpen, onClose, onLangChange }: S
               onClick={() => { update({ lang: 'en' }); onLangChange('en'); }}
             >
               🇬🇧 English
+            </button>
+          </div>
+        </div>
+
+        {/* Theme */}
+        <div className="settings-group">
+          <div className="settings-group-title">
+            {lang === 'ru' ? 'Тема' : 'Theme'}
+          </div>
+          <div className="lang-select">
+            <button
+              className={`lang-option ${settings.theme === 'dark' ? 'active' : ''}`}
+              onClick={() => {
+                update({ theme: 'dark' });
+                document.documentElement.setAttribute('data-theme', 'dark');
+              }}
+            >
+              🌙 {lang === 'ru' ? 'Тёмная' : 'Dark'}
+            </button>
+            <button
+              className={`lang-option ${settings.theme === 'light' ? 'active' : ''}`}
+              onClick={() => {
+                update({ theme: 'light' });
+                document.documentElement.setAttribute('data-theme', 'light');
+              }}
+            >
+              ☀️ {lang === 'ru' ? 'Светлая' : 'Light'}
             </button>
           </div>
         </div>
@@ -132,52 +186,126 @@ export default function SettingsModal({ lang, isOpen, onClose, onLangChange }: S
             </div>
           </div>
 
-          {/* TTS on/off */}
+          {/* Voice on/off */}
           <div className="setting-row">
             <div className="setting-info">
               <span className="setting-icon">🗣️</span>
-              <span>{t(lang, 'ttsEnabled')}</span>
+              <span>{lang === 'ru' ? 'Голос' : 'Voice'}</span>
             </div>
             <div className="setting-controls">
-              <button className="test-btn" onClick={testVoice}>
-                {lang === 'ru' ? 'Тест' : 'Test'}
-              </button>
               <button
                 className={`toggle-btn ${settings.ttsEnabled ? 'active' : ''}`}
-                onClick={() => update({ ttsEnabled: !settings.ttsEnabled })}
+                onClick={() => update({ ttsEnabled: !settings.ttsEnabled, useNeuralTts: true })}
               >
                 <span className="toggle-knob" />
               </button>
             </div>
           </div>
 
-          {/* Voice picker */}
-          {settings.ttsEnabled && voices.length > 0 && (
-            <div className="voice-picker">
-              <div className="setting-row">
-                <span>{lang === 'ru' ? 'Голос' : 'Voice'}</span>
-                <select
-                  className="voice-select"
-                  value={settings.voiceName}
-                  onChange={(e) => {
-                    update({ voiceName: e.target.value });
-                    speak(
-                      lang === 'ru' ? 'Привет! Я ваш голос' : 'Hello! I am your voice',
-                      lang,
-                      e.target.value || undefined
-                    );
-                  }}
-                >
-                  <option value="">{lang === 'ru' ? 'По умолчанию' : 'Default'}</option>
-                  {voices.map((v) => (
-                    <option key={v.name} value={v.name}>
-                      {v.name}
-                    </option>
-                  ))}
-                </select>
+          {/* Voice picker (shown when voice is ON) */}
+          {settings.ttsEnabled && (
+            <div className="voice-picker neural-voice-picker">
+              <div className="neural-voice-grid">
+                {filteredNeuralVoices.map((v) => (
+                  <button
+                    key={v.id}
+                    className={`neural-voice-chip ${settings.neuralVoice === v.id ? 'active' : ''}`}
+                    onClick={() => {
+                      update({ neuralVoice: v.id });
+                      testNeuralVoice(v.id);
+                    }}
+                  >
+                    {v.label[lang]}
+                  </button>
+                ))}
               </div>
+              <button
+                className="test-btn neural-test-btn"
+                onClick={() => testNeuralVoice()}
+                disabled={neuralTestLoading}
+              >
+                {neuralTestLoading
+                  ? (lang === 'ru' ? '⏳ Генерация...' : '⏳ Generating...')
+                  : (lang === 'ru' ? '▶ Тест голоса' : '▶ Test voice')
+                }
+              </button>
             </div>
           )}
+        </div>
+
+        {/* Appearance & Accessibility */}
+        <div className="settings-group">
+          <div className="settings-group-title">
+            {lang === 'ru' ? '🎨 Внешний вид' : '🎨 Appearance'}
+          </div>
+
+          {/* Large UI */}
+          <div className="setting-row">
+            <div className="setting-info">
+              <span className="setting-icon">🔍</span>
+              <span>{lang === 'ru' ? 'Крупный интерфейс' : 'Large UI'}</span>
+            </div>
+            <div className="setting-controls">
+              <button
+                className={`toggle-btn ${settings.largeUi ? 'active' : ''}`}
+                onClick={() => {
+                  const next = !settings.largeUi;
+                  update({ largeUi: next });
+                  document.documentElement.setAttribute('data-size', next ? 'large' : 'normal');
+                }}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+          </div>
+
+          {/* Orb Mode */}
+          <div className="setting-row">
+            <div className="setting-info">
+              <span className="setting-icon">🔮</span>
+              <span>{lang === 'ru' ? 'Режим шара' : 'Orb mode'}</span>
+            </div>
+            <div className="setting-controls">
+              <div className="lang-select" style={{gap: '4px'}}>
+                <button
+                  className={`lang-option ${settings.orbMode === 'calm' ? 'active' : ''}`}
+                  onClick={() => {
+                    update({ orbMode: 'calm' });
+                    document.documentElement.setAttribute('data-orb', 'calm');
+                  }}
+                  style={{fontSize: '12px', padding: '4px 10px'}}
+                >
+                  {lang === 'ru' ? '🌿 Спокойный' : '🌿 Calm'}
+                </button>
+                <button
+                  className={`lang-option ${settings.orbMode === 'vibrant' ? 'active' : ''}`}
+                  onClick={() => {
+                    update({ orbMode: 'vibrant' });
+                    document.documentElement.setAttribute('data-orb', 'vibrant');
+                  }}
+                  style={{fontSize: '12px', padding: '4px 10px'}}
+                >
+                  {lang === 'ru' ? '✨ Яркий' : '✨ Vibrant'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Funny Phrases */}
+          <div className="setting-row">
+            <div className="setting-info">
+              <span className="setting-icon">😂</span>
+              <span>{lang === 'ru' ? 'Смешные фразы' : 'Funny phrases'}</span>
+            </div>
+            <div className="setting-controls">
+              <button
+                className={`toggle-btn ${settings.funnyPhrases ? 'active' : ''}`}
+                onClick={() => update({ funnyPhrases: !settings.funnyPhrases })}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Pomodoro settings */}
